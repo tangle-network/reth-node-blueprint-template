@@ -22,7 +22,7 @@ contract HelloBlueprint is BlueprintServiceManagerBase {
         public
         payable
         override
-        onlyFromRootChain
+        onlyFromMaster
     {
         // Do something with the operator's details
     }
@@ -36,7 +36,7 @@ contract HelloBlueprint is BlueprintServiceManagerBase {
         public
         payable
         override
-        onlyFromRootChain
+        onlyFromMaster
     {
         // Do something with the service request
     }
@@ -58,7 +58,7 @@ contract HelloBlueprint is BlueprintServiceManagerBase {
         ServiceOperators.OperatorPreferences calldata operator,
         bytes calldata _inputs,
         bytes calldata _outputs
-    ) public payable virtual override onlyFromRootChain {
+    ) public payable virtual override onlyFromMaster {
         // Do something with the job call result
     }
 

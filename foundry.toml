@@ -15,6 +15,6 @@ remappings_version = false
 
 [dependencies]
 forge-std = "1.9.5"
-tnt-core = "0.1.0"
+tnt-core = { version = "0.1.0", git = "https://github.com/tangle-network/tnt-core.git", rev = "27fe87e47e40b684eff2c3bde2dd8c96f82bb8b8" }
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
