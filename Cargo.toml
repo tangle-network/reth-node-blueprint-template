@@ -1,0 +1,53 @@
+[package]
+name = "reth-rpc-blueprint-template"
+version = "0.1.0"
+edition = "2021"
+description = "A Tangle Blueprint for deploying a reth node."
+authors = ["Drew Stone <drewstone329@gmail.com>"]
+license = "MIT OR Apache-2.0"
+homepage = "https://tangle.tools"
+repository = "https://github.com/tangle-network/reth-rpc-blueprint-template"
+readme = "README.md"
+categories = ["cryptography", "cryptography::cryptocurrencies"]
+keywords = ["tangle", "blueprint", "avs"]
+rust-version = "1.81"
+
+[dependencies]
+color-eyre = "0.6"
+blueprint-sdk = { git = "https://github.com/tangle-network/gadget", features = ["tangle", "evm", "macros", "local-store"] }
+async-trait = "0.1.85"
+serde = "1.0.213"
+serde_json = "1.0.135"
+bollard = "0.17"
+futures = "0.3.31"
+thiserror = "2.0.11"
+
+[dev-dependencies]
+blueprint-sdk = { git = "https://github.com/tangle-network/gadget", features = ["tangle", "testing"] }
+
+[build-dependencies]
+blueprint-sdk = { git = "https://github.com/tangle-network/gadget", features = ["build"] }
+
+
+[features]
+default = ["std"]
+std = ["blueprint-sdk/std"]
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "reth-rpc-blueprint-template"
+path = "src/main.rs"
+
+[package.metadata.blueprint]
+manager = { Evm = "HelloBlueprint" }
+
+[[package.metadata.gadget.Native.sources]]
+owner = "tangle-network"
+repo = "reth-rpc-blueprint-template"
+tag = "0.1.0"
+binaries = [
+    { arch = "Amd64", os = "Linux", name = "amd64-linux-reth-rpc-blueprint-template-gadget" },
+    { arch = "Arm64", os = "Linux", name = "arm64-linux-reth-rpc-blueprint-template-gadget" },
+]
