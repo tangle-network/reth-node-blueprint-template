@@ -63,7 +63,7 @@ impl RethNode {
         let docker = Arc::new(docker);
 
         // Pull image if not present
-        if let Err(e) = docker.inspect_image(RETH_IMAGE).await {
+        if let Err(_) = docker.inspect_image(RETH_IMAGE).await {
             logging::info!("Pulling RETH image...");
             let mut pull_stream = docker.create_image(
                 Some(CreateImageOptions {

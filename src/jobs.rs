@@ -47,7 +47,7 @@ pub async fn restart_node(params: Vec<u8>, ctx: ServiceContext) -> crate::Result
     let params: RestartNodeParams =
         serde_json::from_slice(&params).map_err(|e| Error::Other(e.to_string()))?;
 
-    let mut node = ctx.reth_node.lock().await;
+    let node = ctx.reth_node.lock().await;
     node.stop().await?;
 
     if params.clear_cache {
