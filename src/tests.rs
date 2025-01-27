@@ -30,23 +30,28 @@ async fn setup_test_env(reth_node: RethNode) -> Result<(TangleTestHarness, Servi
 
 #[tokio::test]
 async fn test_background_service() -> Result<()> {
+    println!("Starting background service test");
     let reth_config = RethConfig::default();
+    println!("Creating new RethNode with default config");
     let reth_node = crate::reth::RethNode::new(reth_config).await?;
 
+    println!("Setting up test environment");
     let (harness, _context) = setup_test_env(reth_node.clone()).await?;
+    println!("Setting up services");
     let (mut test_env, _service_id) = harness.setup_services().await?;
+    println!("Adding background service");
     test_env.add_background_service(reth_node.clone());
+    println!("Running test environment");
+    test_env.run_runner().await?;
 
-    // Spawn the test environment runner
-    tokio::spawn(async move {
-        test_env.run_runner().await.unwrap();
-    });
-
-    // Wait for node to be healthy
+    println!("Waiting for node to become healthy");
     reth_node.wait_for_healthy().await?;
-    assert!(reth_node.check_health().await?, "Node should be healthy");
+    let health = reth_node.check_health().await?;
+    println!("Node health check result: {}", health);
+    assert!(health, "Node should be healthy");
 
     // Get and print logs
+    println!("Fetching node logs");
     let mut logs = reth_node.get_logs().await?;
     while let Some(log) = logs.next().await {
         match log {
@@ -63,23 +68,31 @@ async fn test_background_service() -> Result<()> {
         }
     }
 
+    println!("Background service test completed successfully");
     Ok(())
 }
 
 #[tokio::test]
 #[ignore]
 async fn test_restart_node() -> Result<()> {
+    println!("Starting restart node test");
     let reth_config = RethConfig::default();
+    println!("Creating new RethNode with default config");
     let reth_node = crate::reth::RethNode::new(reth_config).await?;
 
+    println!("Setting up test environment");
     let (harness, _context) = setup_test_env(reth_node.clone()).await?;
+    println!("Setting up services");
     let (mut test_env, service_id) = harness.setup_services().await?;
+    println!("Adding background service");
     test_env.add_background_service(reth_node);
 
+    println!("Spawning test environment runner");
     tokio::spawn(async move {
         test_env.run_runner().await.unwrap();
     });
 
+    println!("Preparing restart node parameters");
     let params = RestartNodeParams {
         clear_cache: false,
         new_config: None,
@@ -87,6 +100,7 @@ async fn test_restart_node() -> Result<()> {
     let input_bytes = serde_json::to_vec(&params)?;
     let input_bytes_fields = input_bytes.iter().map(|v| InputValue::Uint8(*v)).collect();
 
+    println!("Executing restart job");
     let _ = harness
         .execute_job(
             service_id,
@@ -96,6 +110,7 @@ async fn test_restart_node() -> Result<()> {
         )
         .await?;
 
+    println!("Restart node test completed successfully");
     Ok(())
 }
 

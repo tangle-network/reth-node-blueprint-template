@@ -14,11 +14,17 @@ use bollard::{
         Config, CreateContainerOptions, InspectContainerOptions, LogsOptions,
         RemoveContainerOptions, StartContainerOptions,
     },
+    exec::{CreateExecOptions, StartExecResults},
     image::CreateImageOptions,
     models::HostConfig,
+    secret::PortBinding,
+    volume::CreateVolumeOptions,
     Docker,
 };
 use futures::StreamExt;
+use serde_json;
+use std::collections::HashMap;
+use std::io::Write;
 
 const RETH_IMAGE: &str = "ghcr.io/paradigmxyz/reth:latest";
 const DEFAULT_HTTP_PORT: u16 = 8543;
@@ -104,32 +110,111 @@ impl RethNode {
         Ok(())
     }
 
+    async fn generate_jwt() -> crate::Result<String> {
+        // Generate 32 random bytes for JWT
+        let jwt_secret: [u8; 32] = rand::random();
+        Ok(hex::encode(jwt_secret))
+    }
+
+    async fn store_jwt(&self, jwt: &str) -> crate::Result<()> {
+        let container_id = self.container_id.lock().await;
+        if let Some(id) = container_id.as_ref() {
+            // Create exec instance to write JWT
+            let exec = self
+                .docker
+                .create_exec(
+                    id,
+                    CreateExecOptions {
+                        cmd: Some(vec![
+                            "sh",
+                            "-c",
+                            &format!("echo {} > /etc/jwt/jwt.hex", jwt),
+                        ]),
+                        attach_stdout: Some(true),
+                        attach_stderr: Some(true),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .map_err(Error::Docker)?;
+
+            // Start exec instance
+            if let StartExecResults::Attached { mut output, .. } = self
+                .docker
+                .start_exec(&exec.id, None)
+                .await
+                .map_err(Error::Docker)?
+            {
+                while let Some(Ok(output)) = output.next().await {
+                    logging::debug!("JWT write output: {:?}", output);
+                }
+            }
+
+            logging::info!("JWT secret stored successfully");
+            Ok(())
+        } else {
+            Err(Error::Container("Container not created".into()))
+        }
+    }
+
     pub async fn create_container(&self) -> crate::Result<String> {
+        // Create volumes
+        let data_dir = "rethdata";
+        let jwt_dir = "rethjwt";
+
+        for volume in [data_dir, jwt_dir] {
+            if let Err(_) = self.docker.inspect_volume(volume).await {
+                self.docker
+                    .create_volume(CreateVolumeOptions {
+                        name: volume.to_string(),
+                        ..Default::default()
+                    })
+                    .await
+                    .map_err(Error::Docker)?;
+            }
+        }
+
+        // Generate JWT
+        let jwt = Self::generate_jwt().await?;
+
         let config = Config {
             image: Some(RETH_IMAGE.to_string()),
-            cmd: Some(vec![
-                "node".into(),
-                "--chain=mainnet".into(),
-                format!("--datadir={}", self.config.data_dir),
-                format!("--authrpc.jwtsecret={}", self.config.jwt_secret_path),
-                "--authrpc.addr=0.0.0.0".into(),
-                format!("--authrpc.port={}", self.config.auth_port),
-                "--http".into(),
-                "--http.api=debug,eth,net,trace,txpool,web3,rpc,reth,ots".into(),
-                "--http.addr=0.0.0.0".into(),
-                format!("--http.port={}", self.config.http_port),
-                "--http.corsdomain=*".into(),
-                "--ws".into(),
-                "--ws.api=debug,eth,net,trace,txpool,web3,rpc,reth,ots".into(),
-                "--ws.addr=0.0.0.0".into(),
-                format!("--ws.port={}", self.config.ws_port),
-                "--ws.origins=*".into(),
-            ]),
+            entrypoint: Some(vec!["sh".into(), "-c".into()]),
+            cmd: Some(vec![format!(
+                "mkdir -p /etc/jwt && echo {} > /etc/jwt/jwt.hex && \
+                     reth node \
+                     --metrics=0.0.0.0:9001 \
+                     --chain=mainnet \
+                     --datadir=/root/.local/share/reth/mainnet \
+                     --authrpc.jwtsecret=/etc/jwt/jwt.hex \
+                     --authrpc.addr=0.0.0.0 \
+                     --authrpc.port=8551 \
+                     --http \
+                     --http.addr=0.0.0.0 \
+                     --http.port=8545",
+                jwt
+            )]),
             host_config: Some(HostConfig {
-                binds: Some(vec![
-                    format!("reth_data:{}", self.config.data_dir),
-                    format!("reth_jwt:{}", self.config.jwt_secret_path),
-                ]),
+                binds: Some(vec![format!(
+                    "{}:/root/.local/share/reth/mainnet",
+                    data_dir
+                )]),
+                port_bindings: Some(HashMap::from([
+                    (
+                        "8551/tcp".into(),
+                        Some(vec![PortBinding {
+                            host_ip: Some("0.0.0.0".into()),
+                            host_port: Some("8551".into()),
+                        }]),
+                    ),
+                    (
+                        "8545/tcp".into(),
+                        Some(vec![PortBinding {
+                            host_ip: Some("0.0.0.0".into()),
+                            host_port: Some("8545".into()),
+                        }]),
+                    ),
+                ])),
                 ..Default::default()
             }),
             ..Default::default()
@@ -165,30 +250,86 @@ impl RethNode {
                 .await
                 .map_err(Error::Docker)?;
 
-            // Check container is running
-            if !info.state.and_then(|s| s.running).unwrap_or(false) {
-                logging::warn!("RETH container is not running");
-                return Ok(false);
-            }
+            logging::info!("Container info: {:?}", info);
 
-            // Check logs for readiness
-            if let Ok(mut logs) = self.get_logs().await {
-                while let Some(log) = logs.next().await {
-                    match log {
-                        Ok(log) if log.contains("Node started") => {
-                            logging::info!("RETH node is ready");
-                            return Ok(true);
-                        }
-                        Ok(_) => continue,
-                        Err(e) => {
-                            logging::error!("Error reading logs: {}", e);
+            // Check container state
+            match &info.state {
+                Some(state) => {
+                    logging::info!("Container state: {:?}", state);
+
+                    // Check for OOM or other errors
+                    if let Some(true) = state.oom_killed {
+                        logging::error!("Container was OOM killed");
+                        return Ok(false);
+                    }
+
+                    if let Some(error) = &state.error {
+                        if !error.is_empty() {
+                            logging::error!("Container error: {}", error);
                             return Ok(false);
                         }
                     }
+
+                    // Check exit code if container has stopped
+                    if let Some(code) = state.exit_code {
+                        if code != 0 {
+                            logging::error!("Container exited with code: {}", code);
+                            return Ok(false);
+                        }
+                    }
+
+                    // If not running, return false
+                    if !state.running.unwrap_or(false) {
+                        logging::warn!("Container is not running");
+                        return Ok(false);
+                    }
+                }
+                None => {
+                    logging::error!("No container state information available");
+                    return Ok(false);
                 }
             }
+
+            // Get logs with timestamps
+            let mut logs = self.docker.logs(
+                id,
+                Some(LogsOptions::<String> {
+                    stdout: true,
+                    stderr: true,
+                    follow: false,
+                    timestamps: true,
+                    tail: "50".to_string(),
+                    ..Default::default()
+                }),
+            );
+
+            let mut found_error = false;
+            while let Some(log) = logs.next().await {
+                match log {
+                    Ok(log) => {
+                        logging::info!("Container log: {:?}", log);
+                        if log.to_string().contains("error") || log.to_string().contains("Error") {
+                            found_error = true;
+                            logging::error!("Found error in logs: {:?}", log);
+                        }
+                    }
+                    Err(e) => {
+                        logging::error!("Error reading log: {}", e);
+                        found_error = true;
+                    }
+                }
+            }
+
+            if found_error {
+                return Ok(false);
+            }
+
+            // If we got here and the container is running, consider it healthy
+            Ok(true)
+        } else {
+            logging::error!("No container ID available");
+            Ok(false)
         }
-        Ok(false)
     }
 
     pub async fn wait_for_healthy(&self) -> crate::Result<()> {
@@ -274,26 +415,35 @@ impl RethNode {
 #[async_trait]
 impl BackgroundService for RethNode {
     async fn start(&self) -> Result<oneshot::Receiver<Result<(), RunnerError>>, RunnerError> {
+        logging::info!("Starting RETH node background service");
         let (tx, rx) = oneshot::channel();
         let mut node = self.clone();
 
         tokio::spawn(async move {
             let result = async {
+                logging::info!("Initializing RETH node");
                 // Initialize if needed
                 node.initialize().await?;
 
+                logging::info!("Starting RETH container");
                 // Start container
                 node.start_container().await?;
 
+                logging::info!("Waiting for RETH node to become healthy");
                 // Wait for healthy
                 node.wait_for_healthy().await?;
 
+                logging::info!("Starting RETH node health monitoring");
                 // Start background monitoring
                 node.monitor_health().await
             }
             .await;
 
-            let _ = tx.send(result.map_err(|e| RunnerError::Other(e.to_string())));
+            logging::info!("RETH node background service completed");
+            let _ = tx.send(result.map_err(|e| {
+                logging::error!("RETH node background service error: {}", e);
+                RunnerError::Other(e.to_string())
+            }));
         });
 
         Ok(rx)

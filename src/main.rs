@@ -9,7 +9,7 @@ async fn main() -> Result<()> {
     let reth_node = blueprint::reth::RethNode::new(reth_config).await?;
 
     // Create service context with the RETH node
-    let context = blueprint::service::ServiceContext::new(env.clone(), reth_node.clone());
+    let _context = blueprint::service::ServiceContext::new(env.clone(), reth_node.clone());
 
     blueprint_sdk::logging::info!("Starting the event watcher ...");
     let tangle_config = TangleConfig::default();
