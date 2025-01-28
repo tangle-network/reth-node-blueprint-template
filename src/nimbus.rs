@@ -16,71 +16,63 @@ use bollard::{
     },
     image::CreateImageOptions,
     models::HostConfig,
-    secret::{EndpointSettings, PortBinding},
+    secret::{EndpointSettings, PortBinding, RestartPolicyNameEnum},
+    volume::CreateVolumeOptions,
     Docker,
 };
 use futures::StreamExt;
 use std::collections::HashMap;
-use std::str;
 
-// Constants for default configuration
-const RETH_IMAGE: &str = "ghcr.io/paradigmxyz/reth:latest";
-const DEFAULT_HTTP_PORT: u16 = 8545;
-const DEFAULT_WS_PORT: u16 = 8546;
-const DEFAULT_AUTH_PORT: u16 = 8551;
-const DEFAULT_P2P_PORT: u16 = 30303;
-const DEFAULT_METRICS_PORT: u16 = 9001;
-const DEFAULT_BOOTNODES: [&str; 2] = [
-    "enode://d860a01f9722d78051619d1e2351aba3f43f943f6f00718d1b9baa4101932a1f5011f16bb2b1bb35db20d6fe28fa0bf09636d26a87d31de9ec6203eeedb1f666@18.138.108.67:30303",
-    "enode://22a8232c3abc76a16ae9d6c3b164f98775fe226f0917b0ca871128a74a8e9630b458460865bab457221f1d448dd9791d24c4e5d88786180ac185df813a68d4de@3.209.45.79:30303",
-];
+const NIMBUS_IMAGE: &str = "statusim/nimbus-eth2:amd64-latest";
+const DEFAULT_P2P_TCP_PORT: u16 = 9000;
+const DEFAULT_P2P_UDP_PORT: u16 = 9000;
+const DEFAULT_REST_PORT: u16 = 5052;
+const DEFAULT_METRICS_PORT: u16 = 8008;
 
 #[derive(Debug, Clone)]
-pub struct RethConfig {
-    pub http_port: u16,
-    pub ws_port: u16,
-    pub auth_port: u16,
-    pub p2p_port: u16,
+pub struct NimbusConfig {
+    pub p2p_tcp_port: u16,
+    pub p2p_udp_port: u16,
+    pub rest_port: u16,
     pub metrics_port: u16,
     pub data_dir: String,
-    pub jwt_secret_path: String,
-    pub bootnodes: Vec<String>,
+    pub execution_endpoint: String,
+    pub network: String,
 }
 
-impl Default for RethConfig {
+impl Default for NimbusConfig {
     fn default() -> Self {
         Self {
-            http_port: DEFAULT_HTTP_PORT,
-            ws_port: DEFAULT_WS_PORT,
-            auth_port: DEFAULT_AUTH_PORT,
-            p2p_port: DEFAULT_P2P_PORT,
+            p2p_tcp_port: DEFAULT_P2P_TCP_PORT,
+            p2p_udp_port: DEFAULT_P2P_UDP_PORT,
+            rest_port: DEFAULT_REST_PORT,
             metrics_port: DEFAULT_METRICS_PORT,
             data_dir: "/data".to_string(),
-            jwt_secret_path: "/jwt/jwt.hex".to_string(),
-            bootnodes: DEFAULT_BOOTNODES.iter().map(|&s| s.to_string()).collect(),
+            execution_endpoint: "http://reth:8551".to_string(),
+            network: "mainnet".to_string(),
         }
     }
 }
 
 #[derive(Clone)]
-pub struct RethNode {
+pub struct NimbusNode {
     docker: Arc<Docker>,
     container_id: Arc<Mutex<Option<String>>>,
-    config: RethConfig,
+    config: NimbusConfig,
 }
 
-impl RethNode {
-    pub async fn new(config: RethConfig) -> crate::Result<Self> {
-        logging::info!("Initializing RETH node");
+impl NimbusNode {
+    pub async fn new(config: NimbusConfig) -> crate::Result<Self> {
+        logging::info!("Initializing Nimbus node");
         let docker = Docker::connect_with_local_defaults().map_err(Error::Docker)?;
         let docker = Arc::new(docker);
 
         // Pull image if not present
-        if let Err(_) = docker.inspect_image(RETH_IMAGE).await {
-            logging::info!("Pulling RETH image...");
+        if let Err(_) = docker.inspect_image(NIMBUS_IMAGE).await {
+            logging::info!("Pulling Nimbus image...");
             let mut pull_stream = docker.create_image(
                 Some(CreateImageOptions {
-                    from_image: RETH_IMAGE,
+                    from_image: NIMBUS_IMAGE,
                     ..Default::default()
                 }),
                 None,
@@ -89,89 +81,103 @@ impl RethNode {
 
             while let Some(result) = pull_stream.next().await {
                 match result {
-                    Ok(output) => {
-                        if let Some(status) = output.status {
-                            logging::debug!("Pull status: {}", status);
-                        }
-                    }
+                    Ok(output) => logging::debug!("Pull status: {:?}", output),
                     Err(e) => return Err(Error::Docker(e)),
                 }
             }
-            logging::info!("RETH image pulled successfully");
         }
 
-        Ok(Self {
+        let node = Self {
             docker,
             container_id: Arc::new(Mutex::new(None)),
             config,
-        })
-    }
+        };
 
-    pub async fn initialize(&mut self) -> crate::Result<()> {
-        logging::info!("Initializing RETH container");
-        let mut container_id = self.container_id.lock().await;
-        if container_id.is_none() {
-            *container_id = Some(self.create_container().await?);
-            logging::info!("Created RETH container");
-        }
-        Ok(())
+        Ok(node)
     }
 
     pub async fn create_container(&self) -> crate::Result<String> {
+        // Create only Nimbus data volume with correct permissions
+        if let Err(_) = self.docker.inspect_volume("nimbus_data").await {
+            self.docker
+                .create_volume(CreateVolumeOptions {
+                    name: "nimbus_data".to_string(),
+                    driver_opts: HashMap::from([
+                        ("type".to_string(), "none".to_string()),
+                        ("device".to_string(), "/data".to_string()),
+                        ("o".to_string(), "bind".to_string()),
+                    ]),
+                    ..Default::default()
+                })
+                .await
+                .map_err(Error::Docker)?;
+        }
+
         let config = Config {
-            image: Some(RETH_IMAGE.to_string()),
+            image: Some(NIMBUS_IMAGE.to_string()),
+            user: Some("root".to_string()),
             cmd: Some(vec![
-                "node".into(),
-                "--chain=mainnet".into(),
-                format!("--datadir={}", self.config.data_dir),
-                format!("--authrpc.jwtsecret={}", self.config.jwt_secret_path),
-                "--authrpc.addr=0.0.0.0".into(),
-                format!("--authrpc.port={}", self.config.auth_port),
-                "--http".into(),
-                "--http.api=debug,eth,net,trace,txpool,web3,rpc,reth,ots".into(),
-                "--http.addr=0.0.0.0".into(),
-                format!("--http.port={}", self.config.http_port),
-                "--http.corsdomain=*".into(),
-                "--ws".into(),
-                "--ws.api=debug,eth,net,trace,txpool,web3,rpc,reth,ots".into(),
-                "--ws.addr=0.0.0.0".into(),
-                format!("--ws.port={}", self.config.ws_port),
-                "--ws.origins=*".into(),
-                format!("--port={}", self.config.p2p_port),
+                format!("--network={}", self.config.network),
+                format!("--data-dir={}", self.config.data_dir),
+                format!("--el={}", self.config.execution_endpoint),
+                "--jwt-secret=/jwt/jwt.hex".into(),
+                format!("--tcp-port={}", self.config.p2p_tcp_port),
+                format!("--udp-port={}", self.config.p2p_udp_port),
+                "--rest".into(),
+                "--rest-address=0.0.0.0".into(),
+                format!("--rest-port={}", self.config.rest_port),
+                "--metrics".into(),
+                "--metrics-address=0.0.0.0".into(),
+                format!("--metrics-port={}", self.config.metrics_port),
+                "--enr-auto-update=true".into(),
+                "--log-level=info".into(),
+                "--non-interactive=true".into(),
             ]),
             host_config: Some(HostConfig {
-                binds: Some(vec!["reth_data:/data".into(), "reth_jwt:/jwt:ro".into()]),
-                network_mode: Some("eth_network".into()),
+                binds: Some(vec!["nimbus_data:/data".into(), "reth_jwt:/jwt:ro".into()]),
+                network_mode: Some("eth_network".to_string()),
+                privileged: Some(true),
                 port_bindings: Some(HashMap::from([
                     (
-                        format!("{}/tcp", self.config.http_port),
+                        format!("{}/tcp", self.config.p2p_tcp_port),
                         Some(vec![PortBinding {
                             host_ip: Some("0.0.0.0".into()),
-                            host_port: Some(self.config.http_port.to_string()),
+                            host_port: Some(self.config.p2p_tcp_port.to_string()),
                         }]),
                     ),
                     (
-                        format!("{}/tcp", self.config.p2p_port),
+                        format!("{}/udp", self.config.p2p_udp_port),
                         Some(vec![PortBinding {
                             host_ip: Some("0.0.0.0".into()),
-                            host_port: Some(self.config.p2p_port.to_string()),
+                            host_port: Some(self.config.p2p_udp_port.to_string()),
                         }]),
                     ),
                     (
-                        format!("{}/udp", self.config.p2p_port),
+                        format!("{}/tcp", self.config.rest_port),
                         Some(vec![PortBinding {
-                            host_ip: Some("0.0.0.0".into()),
-                            host_port: Some(self.config.p2p_port.to_string()),
+                            host_ip: Some("127.0.0.1".into()),
+                            host_port: Some(self.config.rest_port.to_string()),
+                        }]),
+                    ),
+                    (
+                        format!("{}/tcp", self.config.metrics_port),
+                        Some(vec![PortBinding {
+                            host_ip: Some("127.0.0.1".into()),
+                            host_port: Some(self.config.metrics_port.to_string()),
                         }]),
                     ),
                 ])),
+                restart_policy: Some(bollard::models::RestartPolicy {
+                    name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
+                    ..Default::default()
+                }),
                 ..Default::default()
             }),
             networking_config: Some(NetworkingConfig {
                 endpoints_config: HashMap::from([(
-                    "eth_network".into(),
+                    "eth_network".to_string(),
                     EndpointSettings {
-                        aliases: Some(vec!["reth".into()]),
+                        aliases: Some(vec!["nimbus".into()]),
                         ..Default::default()
                     },
                 )]),
@@ -181,22 +187,39 @@ impl RethNode {
 
         let container = self
             .docker
-            .create_container(None::<CreateContainerOptions<String>>, config)
+            .create_container(
+                Some(CreateContainerOptions {
+                    name: "nimbus-eth2",
+                    platform: Some("linux/amd64"),
+                    ..Default::default()
+                }),
+                config,
+            )
             .await
             .map_err(Error::Docker)?;
 
         Ok(container.id)
     }
 
+    pub async fn initialize(&mut self) -> crate::Result<()> {
+        logging::info!("Initializing Nimbus container");
+        let mut container_id = self.container_id.lock().await;
+        if container_id.is_none() {
+            *container_id = Some(self.create_container().await?);
+            logging::info!("Created Nimbus container");
+        }
+        Ok(())
+    }
+
     pub async fn start_container(&self) -> crate::Result<()> {
-        logging::info!("Starting RETH container");
+        logging::info!("Starting Nimbus container");
         let id = self.container_id.lock().await;
         if let Some(id) = id.as_ref() {
             self.docker
                 .start_container(id, None::<StartContainerOptions<String>>)
                 .await
                 .map_err(Error::Docker)?;
-            logging::info!("RETH container started");
+            logging::info!("Nimbus container started");
         }
         Ok(())
     }
@@ -205,7 +228,6 @@ impl RethNode {
         match log {
             bollard::container::LogOutput::StdOut { message }
             | bollard::container::LogOutput::StdErr { message } => {
-                // Remove ANSI escape codes and convert to string
                 String::from_utf8_lossy(&message)
                     .replace("\u{1b}[0m", "")
                     .replace("\u{1b}[32m", "")
@@ -225,12 +247,10 @@ impl RethNode {
                 .await
                 .map_err(Error::Docker)?;
 
-            // Check container state
             match &info.state {
                 Some(state) => {
                     logging::info!("Container state: {:?}", state);
 
-                    // Check for OOM or other errors
                     if let Some(true) = state.oom_killed {
                         logging::error!("Container was OOM killed");
                         return Ok(false);
@@ -243,7 +263,6 @@ impl RethNode {
                         }
                     }
 
-                    // Check exit code if container has stopped
                     if let Some(code) = state.exit_code {
                         if code != 0 {
                             logging::error!("Container exited with code: {}", code);
@@ -251,7 +270,6 @@ impl RethNode {
                         }
                     }
 
-                    // If not running, return false
                     if !state.running.unwrap_or(false) {
                         logging::warn!("Container is not running");
                         return Ok(false);
@@ -263,7 +281,6 @@ impl RethNode {
                 }
             }
 
-            // Get logs with timestamps
             let mut logs = self.docker.logs(
                 id,
                 Some(LogsOptions::<String> {
@@ -281,7 +298,7 @@ impl RethNode {
                 match log {
                     Ok(log) => {
                         let formatted_log = Self::parse_container_log(log);
-                        logging::info!("RETH : {}", formatted_log);
+                        logging::info!("NIMBUS: {}", formatted_log);
                         if formatted_log.contains("error") || formatted_log.contains("Error") {
                             found_error = true;
                             logging::error!("Found error in logs: {}", formatted_log);
@@ -298,7 +315,6 @@ impl RethNode {
                 return Ok(false);
             }
 
-            // If we got here and the container is running, consider it healthy
             Ok(true)
         } else {
             logging::error!("No container ID available");
@@ -307,7 +323,7 @@ impl RethNode {
     }
 
     pub async fn wait_for_healthy(&self) -> crate::Result<()> {
-        logging::info!("Waiting for RETH node to be healthy");
+        logging::info!("Waiting for Nimbus node to be healthy");
         let mut retries = 0;
         while retries < 30 {
             if self.check_health().await? {
@@ -320,15 +336,15 @@ impl RethNode {
     }
 
     pub async fn monitor_health(self) -> crate::Result<()> {
-        logging::info!("Starting RETH node health monitoring");
+        logging::info!("Starting Nimbus node health monitoring");
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
         loop {
             interval.tick().await;
             if !self.check_health().await? {
-                logging::error!("RETH node became unhealthy");
+                logging::error!("Nimbus node became unhealthy");
                 return Err(Error::Container("Node became unhealthy".into()));
             }
-            logging::debug!("RETH node health check passed");
+            logging::debug!("Nimbus node health check passed");
         }
     }
 
@@ -359,19 +375,19 @@ impl RethNode {
     }
 
     pub async fn stop(&self) -> crate::Result<()> {
-        logging::info!("Stopping RETH container");
+        logging::info!("Stopping Nimbus container");
         if let Some(id) = self.container_id.lock().await.as_ref() {
             self.docker
                 .stop_container(id, None)
                 .await
                 .map_err(Error::Docker)?;
-            logging::info!("RETH container stopped");
+            logging::info!("Nimbus container stopped");
         }
         Ok(())
     }
 
     pub async fn remove(&self) -> crate::Result<()> {
-        logging::info!("Removing RETH container");
+        logging::info!("Removing Nimbus container");
         if let Some(id) = self.container_id.lock().await.as_ref() {
             self.docker
                 .remove_container(
@@ -383,13 +399,13 @@ impl RethNode {
                 )
                 .await
                 .map_err(Error::Docker)?;
-            logging::info!("RETH container removed");
+            logging::info!("Nimbus container removed");
         }
         Ok(())
     }
 
     pub async fn cleanup(&self) -> crate::Result<()> {
-        logging::info!("Cleaning up RETH resources");
+        logging::info!("Cleaning up Nimbus resources");
 
         // Stop and remove container if it exists
         if let Some(id) = self.container_id.lock().await.as_ref() {
@@ -406,7 +422,7 @@ impl RethNode {
         }
 
         // Remove volumes
-        for volume in ["rethdata", "rethjwt"] {
+        for volume in ["nimbus_data"] {
             if let Ok(_) = self.docker.inspect_volume(volume).await {
                 self.docker
                     .remove_volume(volume, None)
@@ -420,35 +436,31 @@ impl RethNode {
 }
 
 #[async_trait]
-impl BackgroundService for RethNode {
+impl BackgroundService for NimbusNode {
     async fn start(&self) -> Result<oneshot::Receiver<Result<(), RunnerError>>, RunnerError> {
-        logging::info!("Starting RETH node background service");
+        logging::info!("Starting Nimbus node background service");
         let (tx, rx) = oneshot::channel();
         let mut node = self.clone();
 
         tokio::spawn(async move {
             let result = async {
-                logging::info!("Initializing RETH node");
-                // Initialize if needed
+                logging::info!("Initializing Nimbus node");
                 node.initialize().await?;
 
-                logging::info!("Starting RETH container");
-                // Start container
+                logging::info!("Starting Nimbus container");
                 node.start_container().await?;
 
-                logging::info!("Waiting for RETH node to become healthy");
-                // Wait for healthy
+                logging::info!("Waiting for Nimbus node to become healthy");
                 node.wait_for_healthy().await?;
 
-                logging::info!("Starting RETH node health monitoring");
-                // Start background monitoring
+                logging::info!("Starting Nimbus node health monitoring");
                 node.monitor_health().await
             }
             .await;
 
-            logging::info!("RETH node background service completed");
+            logging::info!("Nimbus node background service completed");
             let _ = tx.send(result.map_err(|e| {
-                logging::error!("RETH node background service error: {}", e);
+                logging::error!("Nimbus node background service error: {}", e);
                 RunnerError::Other(e.to_string())
             }));
         });
