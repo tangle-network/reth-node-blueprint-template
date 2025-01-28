@@ -63,6 +63,4 @@ We welcome contributions that enhance node management, improve security, or add 
 
 Dual licensed under Apache 2.0 and MIT.
 
----
-
 Built with 🦀 by the Tangle community.
