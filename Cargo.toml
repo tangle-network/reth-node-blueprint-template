@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = ["reth-docker-template-lib", "reth-docker-template-bin"]
+
+[workspace.package]
+version = "0.1.0"
+description = "A Tangle Blueprint to deploy a Reth node"
+edition = "2024"
+authors = ["Drew Stone <drewstone329@gmail.com>"]
+license = "MIT OR Apache-2.0"
+homepage = "https://tangle.tools"
+repository = "https://github.com/tangle-network/reth-docker-template"
+readme = "README.md"
+categories = ["cryptography", "cryptography::cryptocurrencies"]
+keywords = ["tangle", "blueprint", "avs"]
+
+[workspace.dependencies]
+reth-docker-template-blueprint-lib = { path = "reth-docker-template-lib" }
+
+blueprint-sdk = { git = "https://github.com/tangle-network/blueprint.git", default-features = false }
+tokio = { version = "1.43.0", default-features = false }
+color-eyre = "0.6.3"
+tower = { version = "0.5.2", default-features = false }
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+tracing = "0.1.41"
