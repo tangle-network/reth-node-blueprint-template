@@ -15,7 +15,7 @@ categories = ["cryptography", "cryptography::cryptocurrencies"]
 keywords = ["tangle", "blueprint", "avs"]
 
 [workspace.dependencies]
-reth-docker-template-blueprint-lib = { path = "reth-docker-template-lib" }
+reth-node-blueprint-template-lib = { path = "reth-docker-template-lib" }
 
 blueprint-sdk = { git = "https://github.com/tangle-network/blueprint.git", default-features = false }
 tokio = { version = "1.43.0", default-features = false }

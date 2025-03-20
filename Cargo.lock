@@ -13556,11 +13556,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "reth-docker-template-blueprint-bin"
+name = "reth-node-blueprint-template-bin"
 version = "0.1.0"
 dependencies = [
  "blueprint-sdk",
- "reth-docker-template-blueprint-lib",
+ "reth-node-blueprint-template-lib",
  "tokio",
  "tower",
  "tracing",
@@ -13568,7 +13568,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "reth-docker-template-blueprint-lib"
+name = "reth-node-blueprint-template-lib"
 version = "0.1.0"
 dependencies = [
  "blueprint-sdk",
