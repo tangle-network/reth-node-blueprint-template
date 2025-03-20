@@ -30,12 +30,6 @@ git clone https://github.com/tangle-network/reth-docker-template.git
 cd reth-docker-template
 ```
 
-Make sure the submodules are initialized:
-
-```bash
-git submodule update --init --recursive
-```
-
 Build the blueprint:
 
 ```bash
@@ -113,24 +107,12 @@ The blueprint can be configured through environment variables:
 
 ## Project Structure
 
-- `/local_reth` - Submodule containing the local_reth repository
-- `/reth-docker-template-lib` - Library code for the blueprint
+- `/reth_docker` - Submodule containing the local_reth repository
+- `/reth-node-blueprint-template-lib` - Library code for the blueprint
   - `lib.rs` - Core functionality and state-changing job functions
   - `monitoring.rs` - Data retrieval and monitoring functions
   - `/bin/reth_cli.rs` - Standalone CLI tool for direct interaction
-- `/reth-docker-template-bin` - Binary code for running the blueprint
-
-## Development
-
-### Design Philosophy
-
-This blueprint follows the principle that Tangle jobs should only be used for state-changing operations. Data retrieval operations are provided through:
-
-1. Direct web interfaces (Grafana, Prometheus)
-2. Utility functions in the `monitoring` module that can be used by other applications
-3. A standalone CLI tool for testing and direct interaction
-
-This separation of concerns leads to clearer code and better adherence to the Tangle Blueprint design principles.
+- `/reth-node-blueprint-template-bin` - Binary code for running the blueprint
 
 ### Running Tests
 
@@ -146,12 +128,12 @@ ENABLE_DOCKER_TESTS=1 cargo test
 
 The blueprint follows a clean architecture pattern:
 
-1. The library (`reth-docker-template-lib`) provides core functionality:
+1. The library (`reth-node-blueprint-template-lib`) provides core functionality:
    - State-changing operations as job functions
    - Monitoring utilities for data retrieval
    - A standalone CLI tool for direct interaction
-2. The binary (`reth-docker-template-bin`) integrates with the Tangle Network and exposes job functions
-3. The `local_reth` submodule contains the Docker Compose configuration for running the Reth node
+2. The binary (`reth-node-blueprint-template-bin`) integrates with the Tangle Network and exposes job functions
+3. The `reth_docker` directory contains the Docker Compose configuration for running the Reth node
 
 ## License
 
